@@ -41,23 +41,21 @@ class OverlayService : Service() {
     private var emptyFramesCount: Int = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        apiKey = intent?.getStringExtra("API_KEY")?.trim()
-            ?: intent?.getStringExtra("api_key")?.trim()
+        val safeIntent = intent ?: return START_NOT_STICKY
+        apiKey = safeIntent.getStringExtra("API_KEY")?.trim()
+            ?: safeIntent.getStringExtra("api_key")?.trim()
             ?: ""
-        selectedModel = intent?.getStringExtra("MODEL")?.trim()
-            ?: intent?.getStringExtra("model")?.trim()
+        selectedModel = safeIntent.getStringExtra("MODEL")?.trim()
+            ?: safeIntent.getStringExtra("model")?.trim()
             ?: "gemini-flash-lite-latest"
 
-        val resultCode = intent?.getIntExtra("RESULT_CODE", Activity.RESULT_CANCELED)
-            ?: intent?.getIntExtra("result_code", Activity.RESULT_CANCELED)
-            ?: return START_NOT_STICKY
+        val resultCode = safeIntent.getIntExtra("RESULT_CODE", Activity.RESULT_CANCELED)
 
         val data: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra("DATA", Intent::class.java)
-                ?: intent.getParcelableExtra("data", Intent::class.java)
+            safeIntent.getParcelableExtra("DATA", Intent::class.java)
         } else {
             @Suppress("DEPRECATION")
-            intent.getParcelableExtra("DATA") ?: intent.getParcelableExtra("data")
+            safeIntent.getParcelableExtra("DATA")
         }
 
         if (resultCode != Activity.RESULT_OK || data == null) return START_NOT_STICKY
@@ -189,136 +187,5 @@ class OverlayService : Service() {
             val rowStride = plane.rowStride
             val rowPadding = rowStride - pixelStride * image.width
 
-            val paddedBitmap = Bitmap.createBitmap(
-                image.width + rowPadding / pixelStride,
-                image.height,
-                Bitmap.Config.ARGB_8888
-            )
-            paddedBitmap.copyPixelsFromBuffer(plane.buffer)
-            val croppedScreen = Bitmap.createBitmap(paddedBitmap, 0, 0, image.width, image.height)
-            paddedBitmap.recycle()
-            image.close()
-
-            val cropTop = (croppedScreen.height * 0.62f).toInt().coerceAtLeast(0)
-            val cropBottom = (croppedScreen.height * 0.96f).toInt().coerceAtMost(croppedScreen.height)
-            val cropHeight = (cropBottom - cropTop).coerceAtLeast(40)
-            val subtitleBand = Bitmap.createBitmap(croppedScreen, 0, cropTop, croppedScreen.width, cropHeight)
-            croppedScreen.recycle()
-
-            recognizer.process(InputImage.fromBitmap(subtitleBand, 0))
-                .addOnSuccessListener(worker) { visionText ->
-                    subtitleBand.recycle()
-
-                    val validLines = visionText.textBlocks
-                        .flatMap { it.lines }
-                        .mapNotNull { line ->
-                            val text = line.text.trim()
-                            val box = line.boundingBox ?: return@mapNotNull null
-                            if (box.right > (visionText.textBlocks.maxOfOrNull { b -> b.boundingBox?.right ?: 0 } ?: Int.MAX_VALUE) - 10 &&
-                                text.lowercase().contains("fire")
-                            ) {
-                                return@mapNotNull null
-                            }
-                            if (SubtitleProcessor.isNoiseLine(text)) return@mapNotNull null
-
-                            val absoluteRect = Rect(
-                                box.left,
-                                box.top + cropTop,
-                                box.right,
-                                box.bottom + cropTop
-                            )
-                            Pair(absoluteRect, text)
-                        }
-                        .take(3)
-
-                    if (validLines.isEmpty()) {
-                        emptyFramesCount++
-                        if (emptyFramesCount >= 2) {
-                            SubtitleProcessor.resetCache()
-                            mainHandler.post {
-                                frameView.lines = emptyList()
-                                frameView.statusMessage = ""
-                            }
-                        }
-                        isBusy = false
-                        return@addOnSuccessListener
-                    }
-
-                    emptyFramesCount = 0
-                    val sig = SubtitleProcessor.buildSignature(validLines)
-                    if (SubtitleProcessor.shouldSkipRequest(sig)) {
-                        mainHandler.post {
-                            frameView.lines = SubtitleProcessor.getCachedLines()
-                            frameView.statusMessage = ""
-                        }
-                        isBusy = false
-                        return@addOnSuccessListener
-                    }
-
-                    mainHandler.post {
-                        frameView.statusMessage = "Çevriliyor..."
-                    }
-
-                    val translated = SubtitleProcessor.translateLines(
-                        apiKey = apiKey,
-                        model = selectedModel,
-                        items = validLines,
-                        onStatus = { statusMsg ->
-                            mainHandler.post { frameView.statusMessage = statusMsg }
-                        }
-                    )
-
-                    mainHandler.post {
-                        frameView.lines = translated
-                        frameView.statusMessage = ""
-                    }
-                    isBusy = false
-                }
-                .addOnFailureListener {
-                    subtitleBand.recycle()
-                    isBusy = false
-                }
-        } catch (_: Exception) {
-            try {
-                image.close()
-            } catch (_: Exception) {
-            }
-            isBusy = false
-        }
-    }
-
-    private fun releaseCaptureResources() {
-        try {
-            virtualDisplay?.release()
-        } catch (_: Exception) {
-        }
-        virtualDisplay = null
-
-        try {
-            imageReader?.close()
-        } catch (_: Exception) {
-        }
-        imageReader = null
-
-        try {
-            mediaProjection?.stop()
-        } catch (_: Exception) {
-        }
-        mediaProjection = null
-    }
-
-    override fun onDestroy() {
-        isActive = false
-        releaseCaptureResources()
-        worker.shutdownNow()
-        if (::frameView.isInitialized) {
-            try {
-                windowManager.removeView(frameView)
-            } catch (_: Exception) {
-            }
-        }
-        super.onDestroy()
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-}
+            val
+            
