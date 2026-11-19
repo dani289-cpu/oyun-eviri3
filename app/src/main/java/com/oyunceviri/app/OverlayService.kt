@@ -187,5 +187,136 @@ class OverlayService : Service() {
             val rowStride = plane.rowStride
             val rowPadding = rowStride - pixelStride * image.width
 
-            val
-            
+            val paddedBitmap = Bitmap.createBitmap(
+                image.width + rowPadding / pixelStride,
+                image.height,
+                Bitmap.Config.ARGB_8888
+            )
+            paddedBitmap.copyPixelsFromBuffer(plane.buffer)
+            val croppedScreen = Bitmap.createBitmap(paddedBitmap, 0, 0, image.width, image.height)
+            paddedBitmap.recycle()
+            image.close()
+
+            val cropTop = (croppedScreen.height * 0.62f).toInt().coerceAtLeast(0)
+            val cropBottom = (croppedScreen.height * 0.96f).toInt().coerceAtMost(croppedScreen.height)
+            val cropHeight = (cropBottom - cropTop).coerceAtLeast(40)
+            val subtitleBand = Bitmap.createBitmap(croppedScreen, 0, cropTop, croppedScreen.width, cropHeight)
+            croppedScreen.recycle()
+
+            recognizer.process(InputImage.fromBitmap(subtitleBand, 0))
+                .addOnSuccessListener(worker) { visionText ->
+                    subtitleBand.recycle()
+
+                    val validLines = visionText.textBlocks
+                        .flatMap { it.lines }
+                        .mapNotNull { line ->
+                            val text = line.text.trim()
+                            val box = line.boundingBox ?: return@mapNotNull null
+                            if (box.right > (visionText.textBlocks.maxOfOrNull { b -> b.boundingBox?.right ?: 0 } ?: Int.MAX_VALUE) - 10 &&
+                                text.lowercase().contains("fire")
+                            ) {
+                                return@mapNotNull null
+                            }
+                            if (SubtitleProcessor.isNoiseLine(text)) return@mapNotNull null
+
+                            val absoluteRect = Rect(
+                                box.left,
+                                box.top + cropTop,
+                                box.right,
+                                box.bottom + cropTop
+                            )
+                            Pair(absoluteRect, text)
+                        }
+                        .take(3)
+
+                    if (validLines.isEmpty()) {
+                        emptyFramesCount++
+                        if (emptyFramesCount >= 2) {
+                            SubtitleProcessor.resetCache()
+                            mainHandler.post {
+                                frameView.lines = emptyList()
+                                frameView.statusMessage = ""
+                            }
+                        }
+                        isBusy = false
+                        return@addOnSuccessListener
+                    }
+
+                    emptyFramesCount = 0
+                    val sig = SubtitleProcessor.buildSignature(validLines)
+                    if (SubtitleProcessor.shouldSkipRequest(sig)) {
+                        mainHandler.post {
+                            frameView.lines = SubtitleProcessor.getCachedLines()
+                            frameView.statusMessage = ""
+                        }
+                        isBusy = false
+                        return@addOnSuccessListener
+                    }
+
+                    mainHandler.post {
+                        frameView.statusMessage = "Çevriliyor..."
+                    }
+
+                    val translated = SubtitleProcessor.translateLines(
+                        apiKey = apiKey,
+                        model = selectedModel,
+                        items = validLines,
+                        onStatus = { statusMsg ->
+                            mainHandler.post { frameView.statusMessage = statusMsg }
+                        }
+                    )
+
+                    mainHandler.post {
+                        frameView.lines = translated
+                        frameView.statusMessage = ""
+                    }
+                    isBusy = false
+                }
+                .addOnFailureListener {
+                    subtitleBand.recycle()
+                    isBusy = false
+                }
+        } catch (_: Exception) {
+            try {
+                image.close()
+            } catch (_: Exception) {
+            }
+            isBusy = false
+        }
+    }
+
+    private fun releaseCaptureResources() {
+        try {
+            virtualDisplay?.release()
+        } catch (_: Exception) {
+        }
+        virtualDisplay = null
+
+        try {
+            imageReader?.close()
+        } catch (_: Exception) {
+        }
+        imageReader = null
+
+        try {
+            mediaProjection?.stop()
+        } catch (_: Exception) {
+        }
+        mediaProjection = null
+    }
+
+    override fun onDestroy() {
+        isActive = false
+        releaseCaptureResources()
+        worker.shutdownNow()
+        if (::frameView.isInitialized) {
+            try {
+                windowManager.removeView(frameView)
+            } catch (_: Exception) {
+            }
+        }
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}
